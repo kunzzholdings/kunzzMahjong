@@ -1,5 +1,5 @@
 // Socket.IO 连接
-const socket = io();
+const socket = io('http://192.168.50.17:3000');
 
 // 全局状态
 let gameState = {
@@ -11,7 +11,9 @@ let gameState = {
     currentPlayerIndex: null,
     players: [],
     canClaim: null,
-    selectedTile: null
+    selectedTile: null,
+    // 当服务器发出 can_play（例如吃/碰/杠后）时，允许不摸直接出牌
+    canPlayWithoutDraw: false
 };
 
 // 麻将牌显示映射
@@ -81,6 +83,45 @@ function getTileType(tile) {
     return 'honor';
 }
 
+// 麻将牌排序函数 - 按照万、筒、条、字牌的顺序
+function sortTiles(tiles) {
+    const order = {
+        'w': 1,  // 万
+        'b': 2,  // 筒
+        't': 3,  // 条
+        'honor': 4  // 字牌
+    };
+    
+    const honorOrder = {
+        'dong': 1,
+        'nan': 2,
+        'xi': 3,
+        'bei': 4,
+        'zhong': 5,
+        'fa': 6,
+        'bai': 7
+    };
+    
+    return tiles.sort((a, b) => {
+        // 判断牌的类型
+        const typeA = a.match(/[wtb]$/) ? a.slice(-1) : 'honor';
+        const typeB = b.match(/[wtb]$/) ? b.slice(-1) : 'honor';
+        
+        // 先按花色排序
+        if (order[typeA] !== order[typeB]) {
+            return order[typeA] - order[typeB];
+        }
+        
+        // 同花色，按数字排序
+        if (typeA !== 'honor') {
+            return parseInt(a[0]) - parseInt(b[0]);
+        }
+        
+        // 字牌按固定顺序排序
+        return honorOrder[a] - honorOrder[b];
+    });
+}
+
 function createTileElement(tile, size = 'normal', clickable = false) {
     const tileEl = document.createElement('div');
     tileEl.className = `tile ${size === 'small' ? 'small' : ''} ${size === 'tiny' ? 'tiny' : ''}`;
@@ -98,7 +139,7 @@ function createTileElement(tile, size = 'normal', clickable = false) {
 
 function renderHand() {
     playerHand.innerHTML = '';
-    gameState.hand.sort();
+    gameState.hand = sortTiles(gameState.hand); // 使用新的排序函数
     
     gameState.hand.forEach(tile => {
         const tileEl = createTileElement(tile, 'normal', true);
@@ -130,8 +171,10 @@ function onTileClick(tile, tileEl) {
         return;
     }
     
-    // 检查是否已摸牌（手牌应该是14张）
-    if (gameState.hand.length !== 14) {
+    // 允许两种出牌路径：
+    // 1) 自然回合摸到第14张（hand.length >= 14）
+    // 2) 吃/碰/杠后由服务器下发 can_play（canPlayWithoutDraw = true）
+    if (!(gameState.hand.length >= 14 || gameState.canPlayWithoutDraw)) {
         showToast('请先摸牌！');
         return;
     }
@@ -158,6 +201,8 @@ function onTileClick(tile, tileEl) {
         }
         
         gameState.selectedTile = null;
+        // 一旦出牌，重置无需摸牌标记
+        gameState.canPlayWithoutDraw = false;
         
         // 隐藏摸牌按钮
         drawButtonContainer.style.display = 'none';
@@ -233,13 +278,9 @@ function updateGameState(data) {
         document.getElementById('wall-count').textContent = data.wallCount;
     }
     
-    // 如果轮到我，显示摸牌按钮
-    if (gameState.currentPlayerIndex === gameState.playerIndex && gameState.hand.length === 13) {
-        drawButtonContainer.style.display = 'block';
-        actionButtons.style.display = 'none';
-    } else {
-        drawButtonContainer.style.display = 'none';
-    }
+    // 不在这里自动控制摸牌按钮，改由具体事件控制：
+    // - next_turn 时（轮到我）显示摸牌按钮
+    // - 吃/碰/杠后收到 can_play 时隐藏摸牌按钮，直接出牌
 }
 
 // Socket 事件监听
@@ -338,6 +379,8 @@ socket.on('tile_drawn', (data) => {
     
     // 隐藏摸牌按钮
     drawButtonContainer.style.display = 'none';
+    // 摸牌路径允许出牌
+    gameState.canPlayWithoutDraw = false;
 });
 
 socket.on('game_state', (data) => {
@@ -377,12 +420,21 @@ socket.on('can_claim', (data) => {
 socket.on('next_turn', (data) => {
     updateGameState(data);
     actionButtons.style.display = 'none';
+    // 仅在自然进入下一回合时显示摸牌按钮（不是吃/碰/杠后的出牌回合）
+    if (gameState.currentPlayerIndex === gameState.playerIndex) {
+        drawButtonContainer.style.display = 'block';
+    } else {
+        drawButtonContainer.style.display = 'none';
+    }
+    // 进入新回合，需摸牌前不可直接出牌
+    gameState.canPlayWithoutDraw = false;
 });
 
 socket.on('pong_claimed', (data) => {
     if (data.playerId === socket.id) {
-        gameState.hand = data.hand;
-        renderHand();
+        showToast('碰牌成功！请出牌');
+    } else {
+        showToast(`${gameState.players[data.playerIndex]?.name} 碰牌！`);
     }
     
     updateGameState({
@@ -390,13 +442,21 @@ socket.on('pong_claimed', (data) => {
         players: gameState.players
     });
     
-    showToast('碰牌成功！');
     actionButtons.style.display = 'none';
+    
+    // 如果是自己碰牌，不显示摸牌按钮（直接出牌）
+    if (data.playerId === socket.id) {
+        drawButtonContainer.style.display = 'none';
+        gameState.canPlayWithoutDraw = true;
+    }
 });
 
 socket.on('chow_claimed', (data) => {
     if (data.playerId === socket.id) {
         renderHand();
+        showToast('吃牌成功！请出牌');
+    } else {
+        showToast(`${gameState.players[data.playerIndex]?.name} 吃牌！`);
     }
     
     updateGameState({
@@ -404,13 +464,21 @@ socket.on('chow_claimed', (data) => {
         players: gameState.players
     });
     
-    showToast('吃牌成功！');
     actionButtons.style.display = 'none';
+    
+    // 如果是自己吃牌，不显示摸牌按钮（直接出牌）
+    if (data.playerId === socket.id) {
+        drawButtonContainer.style.display = 'none';
+        gameState.canPlayWithoutDraw = true;
+    }
 });
 
 socket.on('kong_claimed', (data) => {
     if (data.playerId === socket.id) {
         renderHand();
+        showToast('杠牌成功！已自动摸牌，请出牌');
+    } else {
+        showToast(`${gameState.players[data.playerIndex]?.name} 杠牌！`);
     }
     
     updateGameState({
@@ -418,8 +486,31 @@ socket.on('kong_claimed', (data) => {
         players: gameState.players
     });
     
-    showToast('杠牌成功！');
     actionButtons.style.display = 'none';
+    
+    // 如果是自己杠牌，不显示摸牌按钮（已经自动摸牌了）
+    if (data.playerId === socket.id) {
+        drawButtonContainer.style.display = 'none';
+        // 杠后服务器会自动摸一张，之后允许出牌
+        gameState.canPlayWithoutDraw = true;
+    }
+});
+
+// 杠牌后摸牌的通知
+socket.on('tile_drawn_after_kong', (data) => {
+    showToast('杠牌后摸到：' + TILE_DISPLAY[data.tile]);
+});
+
+// 服务器通知可以出牌
+socket.on('can_play', (data) => {
+    // 碰吃杠后的提示
+    if (data.message) {
+        console.log(data.message);
+    }
+    // 服务器要求出牌时，隐藏摸牌按钮
+    drawButtonContainer.style.display = 'none';
+    // 明确允许无需摸牌直接出牌
+    gameState.canPlayWithoutDraw = true;
 });
 
 socket.on('update_hand', (data) => {

@@ -48,6 +48,45 @@ function shuffleDeck(deck) {
   return shuffled;
 }
 
+// 麻将牌排序函数 - 按照万、筒、条、字牌的顺序
+function sortTiles(tiles) {
+  const order = {
+    'w': 1,  // 万
+    'b': 2,  // 筒
+    't': 3,  // 条
+    'honor': 4  // 字牌
+  };
+  
+  const honorOrder = {
+    'dong': 1,
+    'nan': 2,
+    'xi': 3,
+    'bei': 4,
+    'zhong': 5,
+    'fa': 6,
+    'bai': 7
+  };
+  
+  return tiles.sort((a, b) => {
+    // 判断牌的类型
+    const typeA = a.match(/[wtb]$/) ? a.slice(-1) : 'honor';
+    const typeB = b.match(/[wtb]$/) ? b.slice(-1) : 'honor';
+    
+    // 先按花色排序
+    if (order[typeA] !== order[typeB]) {
+      return order[typeA] - order[typeB];
+    }
+    
+    // 同花色，按数字排序
+    if (typeA !== 'honor') {
+      return parseInt(a[0]) - parseInt(b[0]);
+    }
+    
+    // 字牌按固定顺序排序
+    return honorOrder[a] - honorOrder[b];
+  });
+}
+
 // 房间类
 class Room {
   constructor(roomId, hostId, hostName) {
@@ -105,12 +144,19 @@ class Room {
       for (let i = 0; i < 13; i++) {
         player.hand.push(this.wall.shift());
       }
-      player.hand.sort();
+      player.hand = sortTiles(player.hand); // 使用新的排序函数
       player.discarded = [];
       player.melds = [];
     });
     
+    // 庄家（房主，索引0）起手额外摸一张，起手14张后先打牌
     this.currentPlayerIndex = 0;
+    const dealer = this.players[this.currentPlayerIndex];
+    const dealerExtra = this.wall.shift();
+    if (dealerExtra) {
+      dealer.hand.push(dealerExtra);
+      dealer.hand = sortTiles(dealer.hand);
+    }
     return true;
   }
 
@@ -128,7 +174,7 @@ class Room {
     
     const tile = this.wall.shift();
     player.hand.push(tile);
-    player.hand.sort();
+    player.hand = sortTiles(player.hand); // 使用新的排序函数
     return tile;
   }
 
@@ -223,8 +269,12 @@ class Room {
     
     this.lastDiscard = null;
     
-    // 碰牌的玩家继续出牌
+    // 碰牌的玩家继续出牌（不摸牌，不进入下一回合）
     this.currentPlayerIndex = this.players.findIndex(p => p.id === playerId);
+    
+    // 手牌重新排序
+    player.hand = sortTiles(player.hand);
+    
     return true;
   }
 
@@ -251,8 +301,12 @@ class Room {
     
     this.lastDiscard = null;
     
-    // 吃牌的玩家继续出牌
+    // 吃牌的玩家继续出牌（不摸牌，不进入下一回合）
     this.currentPlayerIndex = this.players.findIndex(p => p.id === playerId);
+    
+    // 手牌重新排序
+    player.hand = sortTiles(player.hand);
+    
     return true;
   }
 
@@ -281,12 +335,13 @@ class Room {
     const drawnTile = this.wall.shift();
     if (drawnTile) {
       player.hand.push(drawnTile);
-      player.hand.sort();
+      player.hand = sortTiles(player.hand);
     }
     
-    // 杠牌的玩家继续出牌
+    // 杠牌的玩家继续出牌（不进入下一回合）
     this.currentPlayerIndex = this.players.findIndex(p => p.id === playerId);
-    return true;
+    
+    return drawnTile; // 返回摸到的牌，让前端知道
   }
 
   checkWin(playerId, isSelfDraw = false) {
@@ -508,7 +563,7 @@ io.on('connection', (socket) => {
       return;
     }
     
-    // 向每个玩家发送各自的手牌
+    // 向每个玩家发送各自的手牌（庄家可能已是14张）
     room.players.forEach((player, index) => {
       io.to(player.id).emit('game_started', {
         hand: player.hand,
@@ -525,6 +580,10 @@ io.on('connection', (socket) => {
         wallCount: room.wall.length
       });
     });
+    
+    // 首轮：通知庄家无需摸牌，直接出牌
+    const dealerId = room.players[room.currentPlayerIndex].id;
+    io.to(dealerId).emit('can_play', { message: '首轮开始，请出牌' });
     
     console.log(`游戏开始: 房间 ${roomId}`);
   });
@@ -642,8 +701,7 @@ io.on('connection', (socket) => {
       io.to(roomId).emit('pong_claimed', {
         playerId: socket.id,
         playerIndex: room.currentPlayerIndex,
-        melds: player.melds,
-        hand: player.hand
+        melds: player.melds
       });
       
       socket.emit('update_hand', { hand: player.hand });
@@ -658,6 +716,9 @@ io.on('connection', (socket) => {
           melds: p.melds
         }))
       });
+      
+      // 通知碰牌玩家可以直接出牌（手牌13张）
+      socket.emit('can_play', { message: '请出牌' });
     }
   });
 
@@ -689,6 +750,9 @@ io.on('connection', (socket) => {
           melds: p.melds
         }))
       });
+      
+      // 通知吃牌玩家可以直接出牌（手牌13张）
+      socket.emit('can_play', { message: '请出牌' });
     }
   });
 
@@ -699,7 +763,9 @@ io.on('connection', (socket) => {
     
     if (!room || !room.gameStarted) return;
     
-    if (room.performKong(socket.id)) {
+    const drawnTile = room.performKong(socket.id);
+    
+    if (drawnTile) {
       const player = room.players.find(p => p.id === socket.id);
       
       io.to(roomId).emit('kong_claimed', {
@@ -709,9 +775,14 @@ io.on('connection', (socket) => {
       });
       
       socket.emit('update_hand', { hand: player.hand });
+      socket.emit('tile_drawn_after_kong', { 
+        tile: drawnTile,
+        message: '杠牌后摸牌，请出牌'
+      });
       
       io.to(roomId).emit('game_state', {
         currentPlayerIndex: room.currentPlayerIndex,
+        wallCount: room.wall.length,
         players: room.players.map(p => ({
           id: p.id,
           name: p.name,
@@ -720,6 +791,9 @@ io.on('connection', (socket) => {
           melds: p.melds
         }))
       });
+      
+      // 通知杠牌玩家可以直接出牌（手牌14张）
+      socket.emit('can_play', { message: '杠牌后已摸牌，请出牌' });
     }
   });
 
