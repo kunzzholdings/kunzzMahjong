@@ -13,7 +13,9 @@ let gameState = {
     canClaim: null,
     selectedTile: null,
     // 当服务器发出 can_play（例如吃/碰/杠后）时，允许不摸直接出牌
-    canPlayWithoutDraw: false
+    canPlayWithoutDraw: false,
+    // 本回合是否已摸过牌（用于允许摸后出牌，即使手牌绝对数量不是14）
+    hasDrawnThisTurn: false
 };
 
 // 麻将牌显示映射
@@ -172,9 +174,9 @@ function onTileClick(tile, tileEl) {
     }
     
     // 允许两种出牌路径：
-    // 1) 自然回合摸到第14张（hand.length >= 14）
+    // 1) 本回合已摸过牌（hasDrawnThisTurn = true）
     // 2) 吃/碰/杠后由服务器下发 can_play（canPlayWithoutDraw = true）
-    if (!(gameState.hand.length >= 14 || gameState.canPlayWithoutDraw)) {
+    if (!(gameState.hasDrawnThisTurn || gameState.canPlayWithoutDraw)) {
         showToast('请先摸牌！');
         return;
     }
@@ -201,8 +203,9 @@ function onTileClick(tile, tileEl) {
         }
         
         gameState.selectedTile = null;
-        // 一旦出牌，重置无需摸牌标记
+        // 一旦出牌，重置标记
         gameState.canPlayWithoutDraw = false;
+        gameState.hasDrawnThisTurn = false;
         
         // 隐藏摸牌按钮
         drawButtonContainer.style.display = 'none';
@@ -379,7 +382,8 @@ socket.on('tile_drawn', (data) => {
     
     // 隐藏摸牌按钮
     drawButtonContainer.style.display = 'none';
-    // 摸牌路径允许出牌
+    // 本回合已摸牌，可出牌
+    gameState.hasDrawnThisTurn = true;
     gameState.canPlayWithoutDraw = false;
 });
 
@@ -428,6 +432,7 @@ socket.on('next_turn', (data) => {
     }
     // 进入新回合，需摸牌前不可直接出牌
     gameState.canPlayWithoutDraw = false;
+    gameState.hasDrawnThisTurn = false;
 });
 
 socket.on('pong_claimed', (data) => {
@@ -499,6 +504,9 @@ socket.on('kong_claimed', (data) => {
 // 杠牌后摸牌的通知
 socket.on('tile_drawn_after_kong', (data) => {
     showToast('杠牌后摸到：' + TILE_DISPLAY[data.tile]);
+    // 杠后自动摸牌，允许直接出牌
+    gameState.hasDrawnThisTurn = true;
+    gameState.canPlayWithoutDraw = true;
 });
 
 // 服务器通知可以出牌
@@ -511,6 +519,7 @@ socket.on('can_play', (data) => {
     drawButtonContainer.style.display = 'none';
     // 明确允许无需摸牌直接出牌
     gameState.canPlayWithoutDraw = true;
+    // 该路径不是“自然摸牌”，不设置 hasDrawnThisTurn
 });
 
 socket.on('update_hand', (data) => {
