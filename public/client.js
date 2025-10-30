@@ -1,5 +1,5 @@
-// Socket.IO 连接
-const socket = io('http://192.168.50.17:3000');
+// Socket.IO 连接（使用同源，避免不同环境下的连接问题）
+const socket = io();
 
 // 全局状态
 let gameState = {
