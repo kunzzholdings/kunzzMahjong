@@ -205,9 +205,9 @@ class Room {
     const player = this.players.find(p => p.id === playerId);
     if (!player) return false;
     
-    // 只能吃上家的牌
-    const prevPlayerIndex = (this.currentPlayerIndex - 1 + this.players.length) % this.players.length;
-    if (player.id !== this.players[prevPlayerIndex].id) return false;
+    // 只能吃下一个玩家（打出者的下家）的牌
+    const nextPlayerIndex = (this.currentPlayerIndex + 1) % this.players.length;
+    if (player.id !== this.players[nextPlayerIndex].id) return false;
     
     return this.findChowCombinations(player.hand, this.lastDiscard.tile).length > 0;
   }
