@@ -724,12 +724,25 @@ io.on('connection', (socket) => {
 
   // 吃牌
   socket.on('claim_chow', (data) => {
-    const { roomId, combination } = data;
+    const { roomId } = data;
     const room = rooms.get(roomId);
     
     if (!room || !room.gameStarted) return;
     
-    if (room.performChow(socket.id, combination)) {
+    // 如果前端未提供组合，让服务器自动选择第一组可吃组合
+    let chosenCombo = data.combination;
+    if (!Array.isArray(chosenCombo) || chosenCombo.length === 0) {
+      const player = room.players.find(p => p.id === socket.id);
+      if (!player || !room.lastDiscard) return;
+      const combos = room.findChowCombinations(player.hand, room.lastDiscard.tile);
+      if (!combos || combos.length === 0) {
+        socket.emit('error', { message: '没有可用的吃牌组合' });
+        return;
+      }
+      chosenCombo = combos[0];
+    }
+    
+    if (room.performChow(socket.id, chosenCombo)) {
       const player = room.players.find(p => p.id === socket.id);
       
       io.to(roomId).emit('chow_claimed', {
